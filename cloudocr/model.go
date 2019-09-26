@@ -2,18 +2,6 @@ package cloudocr
 
 import "encoding/xml"
 
-type XmlSerializable interface {
-	GetXml() string
-}
-
-type XmlDeserializable interface {
-}
-
-type XmlBiConvertible interface {
-	XmlSerializable
-	XmlDeserializable
-}
-
 type TaskStatusResponse struct {
 	XMLName xml.Name `xml:"response"`
 	Task    Task     `xml:"task"`
@@ -45,7 +33,7 @@ type ProcessFieldsResponse struct {
 			Right  int    `xml:"right,attr"`
 			Bottom int    `xml:"bottom,attr"`
 			Value  string `xml:"value"`
-			Line   []struct {
+			/*Line   []struct {
 				Left   int `xml:"left,attr"`
 				Top    int `xml:"top,attr"`
 				Right  int `xml:"right,attr"`
@@ -58,7 +46,7 @@ type ProcessFieldsResponse struct {
 					Suspicious bool   `xml:"suspicious,attr"`
 					Value      string `xml:",chardata"`
 				} `xml:"char"`
-			} `xml:"line"`
+			} `xml:"line"`*/
 		} `xml:"text"`
 		Checkmark []struct {
 			Id     string `xml:"id,attr"`

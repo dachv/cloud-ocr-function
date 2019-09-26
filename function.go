@@ -1,55 +1,82 @@
 package function
 
 import (
-	"cloud.google.com/go/functions/metadata"
+	"bytes"
+	"cloud.google.com/go/storage"
 	"context"
-	"database/sql"
 	"fmt"
+	"github.com/dachv/cloud-ocr-function/cloudocr"
 	_ "github.com/lib/pq"
+	"io/ioutil"
 	"log"
-	"os"
 	"time"
 )
 
-var db *sql.DB
-
 var (
-	connectionName = os.Getenv("POSTGRES_INSTANCE_CONNECTION_NAME")
-	dbUser         = os.Getenv("POSTGRES_USER")
-	dbPassword     = os.Getenv("POSTGRES_PASSWORD")
-	dsn            = fmt.Sprintf("user=%s password=%s host=/cloudsql/%s", dbUser, dbPassword, connectionName)
+	storageClient *storage.Client
+	globalCtx     context.Context
 )
 
 func init() {
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		log.Fatalf("Could not open db: %v", err)
+	globalCtx = context.Background()
+	var storageErr error
+	storageClient, storageErr = storage.NewClient(globalCtx)
+	if storageErr != nil {
+		log.Fatalf("Failed to create storage client: %v", storageErr)
 	}
-	// Only allow 1 connection to the database to avoid overloading it.
-	db.SetMaxIdleConns(1)
-	db.SetMaxOpenConns(1)
+}
+
+//zip -r cloud-ocr-function.zip ./ -x \*.git\* -x \*.idea\* -x \*/.DS_Store\*
+func HandleCloudStorageUpload(ctx context.Context, event GCSEvent) error {
+	logEvent(event)
+	objectData := readObjectData(event)
+	buffer := bytes.NewBuffer(objectData)
+	submitImageResp := cloudocr.SubmitImage(buffer, "test.pdf")
+	fmt.Printf("SubmitImage response: %v\n", submitImageResp)
+	processFieldsReq := cloudocr.ProcessFieldsRequest{
+		Xmlns:          "http://ocrsdk.com/schema/taskDescription-1.0.xsd",
+		FieldTemplates: cloudocr.ReqFieldTemplates{},
+		Page: []cloudocr.ReqPage{{
+			ApplyTo:   "0",
+			Text:      cloudocr.OcrTextFields,
+			Barcode:   []cloudocr.ReqBarcode{},
+			Checkmark: []cloudocr.ReqCheckmark{},
+		}},
+	}
+	processFieldsResp := cloudocr.ProcessFields(submitImageResp.Task.Id, processFieldsReq)
+	fmt.Printf("ProcessFields response: %v\n", processFieldsResp)
+	processFieldsResponse := cloudocr.GetProcessFieldsResponse(processFieldsResp.Task.Id)
+	fmt.Printf("ProcessFieldsResponse response: %v", processFieldsResponse)
+	return nil
+}
+
+func readObjectData(event GCSEvent) []byte {
+	objReader, objErr := storageClient.Bucket(event.Bucket).Object(event.Name).NewReader(globalCtx)
+	if objErr != nil {
+		log.Fatalf("Failed to get reader: %v", objErr)
+	}
+	defer objReader.Close()
+	data, readErr := ioutil.ReadAll(objReader)
+	if readErr != nil {
+		log.Fatalf("Failed to read object from storage: %v", readErr)
+	}
+	return data
+}
+
+func logEvent(event GCSEvent) {
+	log.Printf("Bucket: %v\n", event.Bucket)
+	log.Printf("Name: %v\n", event.Name)
+	log.Printf("Metageneration: %v\n", event.Metageneration)
+	log.Printf("Created: %v\n", event.TimeCreated)
+	log.Printf("Updated: %v\n", event.Updated)
 }
 
 type GCSEvent struct {
+	Id             string    `json:"id"`
 	Bucket         string    `json:"bucket"`
 	Name           string    `json:"name"`
 	Metageneration string    `json:"metageneration"`
 	ResourceState  string    `json:"resourceState"`
 	TimeCreated    time.Time `json:"timeCreated"`
 	Updated        time.Time `json:"updated"`
-}
-
-func HandleCloudStorageUpload(ctx context.Context, e GCSEvent) error {
-	meta, err := metadata.FromContext(ctx)
-	if err != nil {
-		return fmt.Errorf("metadata.FromContext: %v", err)
-	}
-	log.Printf("Event ID: %v\n", meta.EventID)
-	log.Printf("Event type: %v\n", meta.EventType)
-	log.Printf("Bucket: %v\n", e.Bucket)
-	log.Printf("File: %v\n", e.Name)
-	log.Printf("Metageneration: %v\n", e.Metageneration)
-	log.Printf("Created: %v\n", e.TimeCreated)
-	log.Printf("Updated: %v\n", e.Updated)
-	return nil
 }
