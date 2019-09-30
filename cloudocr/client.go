@@ -28,11 +28,12 @@ func init() {
 	}
 }
 
-func SubmitImage(dataBuffer *bytes.Buffer, name string) *TaskStatusResponse {
+func SubmitImage(data []byte, name string) *TaskStatusResponse {
+	buffer := bytes.NewBuffer(data)
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	filePart, _ := writer.CreateFormFile("upload", name)
-	_, _ = io.Copy(filePart, dataBuffer)
+	_, _ = io.Copy(filePart, buffer)
 	_ = writer.Close()
 	req := createHttpRequest("POST", apiUrl+"/submitImage", body)
 	req.Header.Add("Content-Type", writer.FormDataContentType())

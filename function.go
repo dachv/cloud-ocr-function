@@ -1,38 +1,43 @@
 package function
 
 import (
-	"bytes"
-	"cloud.google.com/go/storage"
 	"context"
 	"fmt"
 	"github.com/dachv/cloud-ocr-function/cloudocr"
+	"github.com/dachv/cloud-ocr-function/cloudsql"
+	"github.com/dachv/cloud-ocr-function/cloudstorage"
 	_ "github.com/lib/pq"
-	"io/ioutil"
 	"log"
-	"time"
 )
 
-var (
-	storageClient *storage.Client
-	globalCtx     context.Context
-)
+const formTypeFieldId string = "FormType"
+const validFormType string = "0W-8BEN-E"
+const destinationBucket string = "cloud-ocr-destination"
 
 func init() {
-	globalCtx = context.Background()
-	var storageErr error
-	storageClient, storageErr = storage.NewClient(globalCtx)
-	if storageErr != nil {
-		log.Fatalf("Failed to create storage client: %v", storageErr)
-	}
+
 }
 
 //zip -r cloud-ocr-function.zip ./ -x \*.git\* -x \*.idea\* -x \*/.DS_Store\*
-func HandleCloudStorageUpload(ctx context.Context, event GCSEvent) error {
-	logEvent(event)
-	objectData := readObjectData(event)
-	buffer := bytes.NewBuffer(objectData)
-	submitImageResp := cloudocr.SubmitImage(buffer, "test.pdf")
-	fmt.Printf("SubmitImage response: %v\n", submitImageResp)
+func HandleCloudStorageUpload(ctx context.Context, event cloudstorage.StorageEvent) error {
+	log.Printf("StorageEvent: %v\n", event)
+	objectData := cloudstorage.ReadObjectData(event.Bucket, event.Name)
+	ocrResult := performOcr(objectData)
+	metadata := extractDocumentMetadata(ocrResult)
+	if isDocumentValid(metadata) {
+		destObjectName := fmt.Sprintf("TestCompany/processed/1/application/1.0/%v", event.Name)
+		cloudstorage.CreateNewObject(destinationBucket, destObjectName, objectData, metadata)
+		log.Printf("Storage destination object name: %v", destObjectName)
+		insertId := cloudsql.InsertDocumentMetadata(metadata)
+		log.Printf("Document metadata insert id: %v", insertId)
+
+	}
+	return nil
+}
+
+func performOcr(documentData []byte) *cloudocr.ProcessFieldsResponse {
+	submitImageResp := cloudocr.SubmitImage(documentData, "document.pdf")
+	log.Printf("SubmitImage response: %v\n", submitImageResp)
 	processFieldsReq := cloudocr.ProcessFieldsRequest{
 		Xmlns:          "http://ocrsdk.com/schema/taskDescription-1.0.xsd",
 		FieldTemplates: cloudocr.ReqFieldTemplates{},
@@ -44,39 +49,30 @@ func HandleCloudStorageUpload(ctx context.Context, event GCSEvent) error {
 		}},
 	}
 	processFieldsResp := cloudocr.ProcessFields(submitImageResp.Task.Id, processFieldsReq)
-	fmt.Printf("ProcessFields response: %v\n", processFieldsResp)
+	log.Printf("ProcessFields response: %v\n", processFieldsResp)
 	processFieldsResponse := cloudocr.GetProcessFieldsResponse(processFieldsResp.Task.Id)
-	fmt.Printf("ProcessFieldsResponse response: %v", processFieldsResponse)
-	return nil
+	log.Printf("ProcessFieldsResponse response: %v", processFieldsResponse)
+	return processFieldsResponse
 }
 
-func readObjectData(event GCSEvent) []byte {
-	objReader, objErr := storageClient.Bucket(event.Bucket).Object(event.Name).NewReader(globalCtx)
-	if objErr != nil {
-		log.Fatalf("Failed to get reader: %v", objErr)
+func extractDocumentMetadata(response *cloudocr.ProcessFieldsResponse) map[string]string {
+	metadata := make(map[string]string)
+	for _, page := range response.Page {
+		for _, text := range page.Text {
+			metadata[text.Id] = text.Value
+		}
 	}
-	defer objReader.Close()
-	data, readErr := ioutil.ReadAll(objReader)
-	if readErr != nil {
-		log.Fatalf("Failed to read object from storage: %v", readErr)
+	log.Printf("Document metadata: %v", metadata)
+	return metadata
+}
+
+func isDocumentValid(metadata map[string]string) bool {
+	for id, value := range metadata {
+		if id == formTypeFieldId && value == validFormType {
+			log.Printf("Document is valid: %v", value)
+			return true
+		}
 	}
-	return data
-}
-
-func logEvent(event GCSEvent) {
-	log.Printf("Bucket: %v\n", event.Bucket)
-	log.Printf("Name: %v\n", event.Name)
-	log.Printf("Metageneration: %v\n", event.Metageneration)
-	log.Printf("Created: %v\n", event.TimeCreated)
-	log.Printf("Updated: %v\n", event.Updated)
-}
-
-type GCSEvent struct {
-	Id             string    `json:"id"`
-	Bucket         string    `json:"bucket"`
-	Name           string    `json:"name"`
-	Metageneration string    `json:"metageneration"`
-	ResourceState  string    `json:"resourceState"`
-	TimeCreated    time.Time `json:"timeCreated"`
-	Updated        time.Time `json:"updated"`
+	log.Printf("Document is invalid")
+	return false
 }
