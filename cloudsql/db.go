@@ -30,13 +30,32 @@ func init() {
 	db.SetMaxOpenConns(1)
 }
 
-func InsertDocumentMetadata(objectName string, metadata map[string]string) int {
+func ExistsWith(companyName string, formType string) (bool, int) {
+	jsonClauseBytes, err := json.Marshal(map[string]string{"FormType": formType})
+	if err != nil {
+		log.Fatalf("Error marshalling json clause map: %v", err)
+	}
+	row := db.QueryRow(`select distinct on (version) version from document where company_name = $1
+  						and metadata @> $2 order by version desc`, companyName, string(jsonClauseBytes))
+	version := 0
+	switch err = row.Scan(&version); err {
+	case sql.ErrNoRows:
+		return false, version
+	case nil:
+		return version > 0, version
+	default:
+		log.Fatalf("Error checking document existence: %v", err)
+		return false, version
+	}
+}
+
+func InsertDocument(objectName string, companyName string, version int, metadata map[string]string) int {
 	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
 		log.Fatalf("Error marshalling document metadata to json: %v", err)
 	}
-	row := db.QueryRow(`INSERT INTO document_metadata(created_at, object_name, attributes) 
-						VALUES (current_timestamp, $1, $2) RETURNING id`, objectName, string(metadataBytes))
+	row := db.QueryRow(`INSERT INTO document(created_at, object_name, company_name, version, metadata) VALUES 
+		(current_timestamp, $1, $2, $3, $4) RETURNING id`, objectName, companyName, version, string(metadataBytes))
 	var id int
 	err = row.Scan(&id)
 	if err != nil {

@@ -28,6 +28,26 @@ func init() {
 	}
 }
 
+func PerformOcr(documentData []byte) *ProcessFieldsResponse {
+	submitImageResp := SubmitImage(documentData, "document.pdf")
+	log.Printf("SubmitImage response: %v\n", submitImageResp)
+	processFieldsReq := ProcessFieldsRequest{
+		Xmlns:          "http://ocrsdk.com/schema/taskDescription-1.0.xsd",
+		FieldTemplates: ReqFieldTemplates{},
+		Page: []ReqPage{{
+			ApplyTo:   "0",
+			Text:      OcrTextFields,
+			Barcode:   []ReqBarcode{},
+			Checkmark: []ReqCheckmark{},
+		}},
+	}
+	processFieldsResp := ProcessFields(submitImageResp.Task.Id, processFieldsReq)
+	log.Printf("ProcessFields response: %v\n", processFieldsResp)
+	processFieldsResponse := GetProcessFieldsResponse(processFieldsResp.Task.Id)
+	log.Printf("ProcessFieldsResponse response: %v", processFieldsResponse)
+	return processFieldsResponse
+}
+
 func SubmitImage(data []byte, name string) *TaskStatusResponse {
 	buffer := bytes.NewBuffer(data)
 	body := &bytes.Buffer{}
@@ -81,6 +101,17 @@ func GetProcessFieldsResponse(taskId string) *ProcessFieldsResponse {
 	}
 	log.Fatalf("Status check limit %v exceeded for GetProcessFieldsResponse, taskId: %s", checkLim, taskId)
 	return nil
+}
+
+func (response *ProcessFieldsResponse) GetTextData() map[string]string {
+	metadata := make(map[string]string)
+	for _, page := range response.Page {
+		for _, text := range page.Text {
+			metadata[text.Id] = text.Value
+		}
+	}
+	log.Printf("Text data: %v", metadata)
+	return metadata
 }
 
 func executeAndGetResponse(req *http.Request, model interface{}) {

@@ -2,72 +2,56 @@ package function
 
 import (
 	"context"
-	"fmt"
 	"github.com/dachv/cloud-ocr-function/cloudocr"
 	"github.com/dachv/cloud-ocr-function/cloudsql"
 	"github.com/dachv/cloud-ocr-function/cloudstorage"
 	_ "github.com/lib/pq"
 	"log"
+	"os"
+	"path"
+	"strconv"
 )
 
-const formTypeFieldId string = "FormType"
-const validFormType string = "0W-8BEN-E"
-const destinationBucket string = "cloud-ocr-destination"
+const (
+	formTypeFieldId string = "FormType"
+	validFormType   string = "0W-8BEN-E"
+	processedDir    string = "processed"
+	unprocessedDir  string = "unprocessed"
+)
+
+var destinationBucket string
 
 func init() {
-
+	destinationBucket = os.Getenv("CLOUD_OCR_DESTINATION_BUCKET")
 }
 
 //zip -r cloud-ocr-function.zip ./ -x \*.git\* -x \*.idea\* -x \*/.DS_Store\*
+//gsutil rm "gs://cloud-ocr-source/**"
+//gsutil -h "x-goog-meta-company-name:TestCompany1" -h "x-goog-meta-app-id:1" cp ~/Desktop/ADF-W8-BEN-E\ 2016-Signed.pdf gs://cloud-ocr-source/
 func HandleCloudStorageUpload(ctx context.Context, event cloudstorage.StorageEvent) error {
 	log.Printf("StorageEvent: %v\n", event)
+	companyName := event.Metadata["company-name"]
+	appId := event.Metadata["app-id"]
 	objectData := cloudstorage.ReadObjectData(event.Bucket, event.Name)
-	ocrResult := performOcr(objectData)
-	metadata := extractDocumentMetadata(ocrResult)
-	if isDocumentValid(metadata) {
-		destObjectName := fmt.Sprintf("TestCompany/processed/1/application/1.0/%v", event.Name)
-		cloudstorage.CreateNewObject(destinationBucket, destObjectName, objectData, metadata)
-		log.Printf("Storage destination object name: %v", destObjectName)
-		insertId := cloudsql.InsertDocumentMetadata(destObjectName, metadata)
+	ocrResult := cloudocr.PerformOcr(objectData)
+	ocrData := ocrResult.GetTextData()
+	validDoc := isDocumentValid(ocrData)
+	if validDoc {
+		_, version := cloudsql.ExistsWith(companyName, validFormType)
+		version = version + 1
+		objectName := path.Join(companyName, processedDir, appId, strconv.Itoa(version), event.Name)
+		cloudstorage.CreateNewObject(destinationBucket, objectName, objectData, ocrData)
+		insertId := cloudsql.InsertDocument(objectName, companyName, version, ocrData)
 		log.Printf("Document metadata insert id: %v", insertId)
-
+	} else {
+		objectName := path.Join(companyName, unprocessedDir, appId, event.Name)
+		cloudstorage.CreateNewObject(destinationBucket, objectName, objectData, ocrData)
 	}
 	return nil
 }
 
-func performOcr(documentData []byte) *cloudocr.ProcessFieldsResponse {
-	submitImageResp := cloudocr.SubmitImage(documentData, "document.pdf")
-	log.Printf("SubmitImage response: %v\n", submitImageResp)
-	processFieldsReq := cloudocr.ProcessFieldsRequest{
-		Xmlns:          "http://ocrsdk.com/schema/taskDescription-1.0.xsd",
-		FieldTemplates: cloudocr.ReqFieldTemplates{},
-		Page: []cloudocr.ReqPage{{
-			ApplyTo:   "0",
-			Text:      cloudocr.OcrTextFields,
-			Barcode:   []cloudocr.ReqBarcode{},
-			Checkmark: []cloudocr.ReqCheckmark{},
-		}},
-	}
-	processFieldsResp := cloudocr.ProcessFields(submitImageResp.Task.Id, processFieldsReq)
-	log.Printf("ProcessFields response: %v\n", processFieldsResp)
-	processFieldsResponse := cloudocr.GetProcessFieldsResponse(processFieldsResp.Task.Id)
-	log.Printf("ProcessFieldsResponse response: %v", processFieldsResponse)
-	return processFieldsResponse
-}
-
-func extractDocumentMetadata(response *cloudocr.ProcessFieldsResponse) map[string]string {
-	metadata := make(map[string]string)
-	for _, page := range response.Page {
-		for _, text := range page.Text {
-			metadata[text.Id] = text.Value
-		}
-	}
-	log.Printf("Document metadata: %v", metadata)
-	return metadata
-}
-
-func isDocumentValid(metadata map[string]string) bool {
-	for id, value := range metadata {
+func isDocumentValid(ocrData map[string]string) bool {
+	for id, value := range ocrData {
 		if id == formTypeFieldId && value == validFormType {
 			log.Printf("Document is valid: %v", value)
 			return true
