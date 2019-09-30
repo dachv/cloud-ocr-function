@@ -28,7 +28,7 @@ func HandleCloudStorageUpload(ctx context.Context, event cloudstorage.StorageEve
 		destObjectName := fmt.Sprintf("TestCompany/processed/1/application/1.0/%v", event.Name)
 		cloudstorage.CreateNewObject(destinationBucket, destObjectName, objectData, metadata)
 		log.Printf("Storage destination object name: %v", destObjectName)
-		insertId := cloudsql.InsertDocumentMetadata(metadata)
+		insertId := cloudsql.InsertDocumentMetadata(destObjectName, metadata)
 		log.Printf("Document metadata insert id: %v", insertId)
 
 	}

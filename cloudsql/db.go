@@ -2,6 +2,7 @@ package cloudsql
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	_ "github.com/lib/pq"
 	"log"
@@ -29,17 +30,17 @@ func init() {
 	db.SetMaxOpenConns(1)
 }
 
-func InsertDocumentMetadata(metadata map[string]string) int {
-	rows, err := db.Query("SELECT current_timestamp AS ts")
+func InsertDocumentMetadata(objectName string, metadata map[string]string) int {
+	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
-		log.Fatalf("Could not open db: %v", err)
+		log.Fatalf("Error marshalling document metadata to json: %v", err)
 	}
-	defer rows.Close()
-	ts := ""
-	rows.Next()
-	if err := rows.Scan(&ts); err != nil {
-		log.Printf("rows.Scan: %v", err)
+	row := db.QueryRow(`INSERT INTO document_metadata(created_at, object_name, attributes) 
+						VALUES (current_timestamp, $1, $2) RETURNING id`, objectName, string(metadataBytes))
+	var id int
+	err = row.Scan(&id)
+	if err != nil {
+		log.Fatalf("Error inserting document metadata to db: %v", err)
 	}
-	fmt.Printf("TS: %v", ts)
-	return 0
+	return id
 }
